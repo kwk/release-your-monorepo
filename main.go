@@ -24,7 +24,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// See https://gowebexamples.com/advanced-middleware/
+// MiddleWare See https://gowebexamples.com/advanced-middleware/
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
 // Logging logs all requests with its path and the time it took to process
@@ -42,7 +42,7 @@ func Logging() Middleware {
 	}
 }
 
-// Method ensures that url can only be requested with a specific method, else returns a 400 Bad Request
+// EnsureMethod ensures that url can only be requested with a specific method, else returns a 400 Bad Request
 func EnsureMethod(m string) Middleware {
 	// Create a new Middleware
 	return func(f http.HandlerFunc) http.HandlerFunc {
@@ -67,14 +67,12 @@ func Chain(f http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
 	return f
 }
 
+// HandleStatus serves /status
 func HandleStatus(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Healthy\n")
 }
 
-// Checks for a proper request.
-// a) * Sees if the requested archive file is already existing in the cache.
-//    * Immediately return if it exsits
-// b) *
+// HandleArchive does the heavy lifting on each request. TODO(kwk): document me
 // TODO(kwk): Forward to github when s=/ or s=. ?
 func HandleArchive(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
