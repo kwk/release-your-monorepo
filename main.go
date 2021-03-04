@@ -357,6 +357,7 @@ func setupGitLocalMirror() {
 			infoLog.Printf("updating local git mirror of remote %q in %q", gitRepositoryURL, gitLocalMirrorDir)
 			executeCommandOrFatalLog("git -C %q remote update", gitLocalMirrorDir)
 		}
+		infoLog.Print("local git mirror is ready")
 	}()
 
 	// Setup ticker for updating the git mirror
