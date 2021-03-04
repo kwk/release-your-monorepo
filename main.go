@@ -24,7 +24,7 @@ import (
 	"github.com/gorilla/mux"
 )
 
-// MiddleWare See https://gowebexamples.com/advanced-middleware/
+// Middleware See https://gowebexamples.com/advanced-middleware/
 type Middleware func(http.HandlerFunc) http.HandlerFunc
 
 // Logging logs all requests with its path and the time it took to process
