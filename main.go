@@ -67,6 +67,10 @@ func Chain(f http.HandlerFunc, middlewares ...Middleware) http.HandlerFunc {
 	return f
 }
 
+func HandleStatus(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "Healthy\n")
+}
+
 // Checks for a proper request.
 // a) * Sees if the requested archive file is already existing in the cache.
 //    * Immediately return if it exsits
@@ -253,9 +257,35 @@ func cleanCache() {
 	}
 }
 
-func main() {
-	// TODO(kwk): Clean clone directory? Currently we have the ?freshClone=true URL-option to force this
+func setupArchivesCache() {
+	if _, err := os.Stat(localArchiveCacheDir); os.IsNotExist(err) {
+		infoLog.Printf("creating archive cache directory in %q", localArchiveCacheDir)
+		err := os.MkdirAll(localArchiveCacheDir, 0777)
+		if err != nil {
+			errLog.Fatalf("failed to create archive dir %q: %v", localArchiveCacheDir, err)
+		}
+	} else {
+		infoLog.Printf("using already existing archive cache directory %q", localArchiveCacheDir)
+	}
 
+	// Setup ticker for updating the git mirror
+	if cleanCacheTickerDuration != 0 {
+		cleanCacheTicker := time.NewTicker(cleanCacheTickerDuration)
+		go func() {
+			for {
+				select {
+				case t := <-cleanCacheTicker.C:
+					infoLog.Printf("cleaning cache at %s", t)
+					cleanCache()
+				}
+			}
+		}()
+		defer cleanCacheTicker.Stop()
+	}
+
+}
+
+func setupFlags() {
 	flag.StringVar(&gitRepositoryURL, "git-repository-url ", "git@github.com:llvm/llvm-project.git", "What project to checkout")
 	flag.StringVar(&gitLocalMirrorDir, "git-local-mirror-dir", "llvm-project.git", "Where to store the mirror of the remote repository")
 	flag.DurationVar(&shutDownWaitDuration, "graceful-timeout", time.Second*15, "The duration for which the server gracefully waits for existing connections to finish - e.g. 15s or 1m")
@@ -270,7 +300,9 @@ func main() {
 	flag.DurationVar(&cleanCacheRemoveFilesOlderThan, "clean-cache-remove-files-older-than", 24*time.Hour, "Delete cache files older this duration, e.g. 15s or 1m or 0 to disable")
 
 	flag.Parse()
+}
 
+func setupLogging() {
 	// Setup and handle log-levels
 	errLog = log.New(os.Stdout, "ERROR: ", log.Ldate|log.Ltime|log.Lshortfile)
 	warnLog = log.New(os.Stdout, "WARNING: ", log.Ldate|log.Ltime|log.Lshortfile)
@@ -292,7 +324,9 @@ func main() {
 	if l < logLevelMap["debug"] {
 		debugLog.SetOutput(ioutil.Discard)
 	}
+}
 
+func printConfig() {
 	// Print out configration
 	fmt.Printf("%-40s = %s\n", "Setting", "Value")
 	fmt.Printf(strings.Repeat("-", 40) + " " + strings.Repeat("-", 40) + "\n")
@@ -306,44 +340,52 @@ func main() {
 	if _, err := exec.LookPath("tar"); err != nil {
 		errLog.Fatal("tar binary not found in path")
 	}
+}
 
+func setupGitLocalMirror() {
+	// setup local mirror
 	gitLocalMirrorDir, err := filepath.Abs(gitLocalMirrorDir)
 	if err != nil {
-		errLog.Fatal(err)
+		errLog.Fatalf("failed to get absolute path for %q: %v", gitLocalMirrorDir, err)
 	}
 
-	gitLocalClonesDir, err = filepath.Abs(gitLocalClonesDir)
-	if err != nil {
-		errLog.Fatal(err)
-	}
-
-	if _, err := os.Stat(gitLocalMirrorDir); os.IsNotExist(err) {
-		infoLog.Printf("cloning local git mirror of remote %q in %q", gitRepositoryURL, gitLocalMirrorDir)
-		executeCommandOrFatalLog("git clone --mirror %s %q", gitRepositoryURL, gitLocalMirrorDir)
-	} else {
-		infoLog.Printf("updating local git mirror of remote %q in %q", gitRepositoryURL, gitLocalMirrorDir)
-		func() {
-			gitMirrorRWMutex.Lock()
-			defer gitMirrorRWMutex.Unlock()
+	gitMirrorRWMutex.Lock()
+	go func() {
+		defer gitMirrorRWMutex.Unlock()
+		if _, err := os.Stat(gitLocalMirrorDir); os.IsNotExist(err) {
+			infoLog.Printf("cloning local git mirror of remote %q in %q", gitRepositoryURL, gitLocalMirrorDir)
+			executeCommandOrFatalLog("git clone --mirror %s %q", gitRepositoryURL, gitLocalMirrorDir)
+		} else {
+			infoLog.Printf("updating local git mirror of remote %q in %q", gitRepositoryURL, gitLocalMirrorDir)
 			executeCommandOrFatalLog("git -C %q remote update", gitLocalMirrorDir)
-		}()
-	}
+		}
+	}()
 
 	// Setup ticker for updating the git mirror
-	if cleanCacheTickerDuration != 0 {
-		cleanCacheTicker := time.NewTicker(cleanCacheTickerDuration)
+	if gitUpdateMirrorTickerDuration != 0 {
+		updateGitMirrorTicker := time.NewTicker(gitUpdateMirrorTickerDuration)
 		go func() {
 			for {
 				select {
-				case t := <-cleanCacheTicker.C:
-					infoLog.Printf("cleaning cache at %s", t)
-					cleanCache()
+				case t := <-updateGitMirrorTicker.C:
+					infoLog.Printf("updating git mirror at %s", t)
+					func() {
+						gitMirrorRWMutex.Lock()
+						defer gitMirrorRWMutex.Unlock()
+						executeCommandOrFatalLog("git -C %q remote update", gitLocalMirrorDir)
+					}()
 				}
 			}
 		}()
-		defer cleanCacheTicker.Stop()
+		defer updateGitMirrorTicker.Stop()
 	}
+}
 
+func setupGitLocalClones() {
+	gitLocalClonesDir, err := filepath.Abs(gitLocalClonesDir)
+	if err != nil {
+		errLog.Fatalf("failed to get absolute path for %q: %v", gitLocalClonesDir, err)
+	}
 	if _, err := os.Stat(gitLocalClonesDir); os.IsNotExist(err) {
 		infoLog.Printf("creating clones directory in %q", gitLocalClonesDir)
 		err := os.MkdirAll(gitLocalClonesDir, 0777)
@@ -353,16 +395,16 @@ func main() {
 	} else {
 		infoLog.Printf("using already existing clones directory %q", gitLocalClonesDir)
 	}
+}
 
-	if _, err := os.Stat(localArchiveCacheDir); os.IsNotExist(err) {
-		infoLog.Printf("creating archive cache directory in %q", localArchiveCacheDir)
-		err := os.MkdirAll(localArchiveCacheDir, 0777)
-		if err != nil {
-			errLog.Fatalf("failed to create archive dir %q: %v", localArchiveCacheDir, err)
-		}
-	} else {
-		infoLog.Printf("using already existing archive cache directory %q", localArchiveCacheDir)
-	}
+func main() {
+	// TODO(kwk): Clean clone directory? Currently we have the ?freshClone=true URL-option to force this
+	setupFlags()
+	setupLogging()
+	printConfig()
+	setupGitLocalMirror()
+	setupGitLocalClones()
+	setupArchivesCache()
 
 	infoLog.Printf("bring up HTTP server on %q\n", listenAddress)
 
@@ -371,6 +413,9 @@ func main() {
 	// https://gowebexamples.com/advanced-middleware/
 	r.HandleFunc("/archive/{archiveMethod}/{revisionOrTag}/{archiveName}/",
 		Chain(HandleArchive, EnsureMethod(http.MethodGet), Logging()))
+
+	r.HandleFunc("/status",
+		Chain(HandleStatus, EnsureMethod(http.MethodGet), Logging()))
 
 	srv := &http.Server{
 		Addr: listenAddress,
@@ -408,7 +453,4 @@ func main() {
 	// to finalize based on context cancellation.
 	infoLog.Println("Shutting down server and exiting")
 	os.Exit(0)
-
-	// TODO(kwk): Have a shared cache with files computed by the hash of the space-checkout list (git -C llvm-project1 sparse-checkout list) and the hash of the git revision
-	//		      Use https://gowebexamples.com/static-files/ for serving the cached files
 }
